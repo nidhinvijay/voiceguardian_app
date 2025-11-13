@@ -1,0 +1,48 @@
+{
+  "project_info": {
+    "project_number": "391846143031",
+    "project_id": "core-forklift-472604-f8",
+    "storage_bucket": "core-forklift-472604-f8.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:391846143031:android:a2c6f5f173262b1bfb8bb2",
+        "android_client_info": {
+          "package_name": "com.example.voice_guardian_app"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyC02IrE6paKKG_6rCLrr-gK17LJwxALW_Q"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    },
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:391846143031:android:db910c3c5d45aba3fb8bb2",
+        "android_client_info": {
+          "package_name": "com.voiceguardian.voiceguardian_flutter"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyC02IrE6paKKG_6rCLrr-gK17LJwxALW_Q"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

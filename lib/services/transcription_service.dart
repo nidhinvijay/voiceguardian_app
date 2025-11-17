@@ -43,10 +43,12 @@ class TranscriptionService extends ChangeNotifier {
   String? _latestRephrase;
   String? _latestOriginal;
   double? _latestToxicityScore;
-  
+  String? _lastToxicTranscript;
+
   Function(String transcript)? onTranscript;
   Function(String original, String rephrased, double toxicity)? onRephrase;
   Function(String interim)? onInterim;
+  Function(String transcript, double? toxicity)? onToxicDetected;
   
   bool get isConnected => _isConnected;
   String? get currentTranscript => _currentTranscript;
@@ -139,6 +141,17 @@ class TranscriptionService extends ChangeNotifier {
           if (msg.text != null && onTranscript != null) {
             onTranscript!(msg.text!);
           }
+          final isToxicTranscript = msg.isToxic == true && msg.text != null;
+          if (isToxicTranscript) {
+            if (_lastToxicTranscript != msg.text) {
+              _lastToxicTranscript = msg.text;
+              if (onToxicDetected != null) {
+                onToxicDetected!(msg.text!, msg.toxicityScore);
+              }
+            }
+          } else {
+            _lastToxicTranscript = null;
+          }
           notifyListeners();
           debugPrint('TranscriptionService: Transcript: ${msg.text}');
           break;
@@ -151,6 +164,7 @@ class TranscriptionService extends ChangeNotifier {
             onRephrase!(msg.original!, msg.rephrased!, msg.toxicityScore!);
           }
           notifyListeners();
+          _lastToxicTranscript = null;
           break;
         case 'interim':
           if (msg.text != null && onInterim != null) {

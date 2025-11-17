@@ -47,6 +47,9 @@ dependencies:
   # Agora RTC for voice calls with custom Flutter UI
   agora_rtc_engine: ^6.3.2 
 
+  # Native notifications (heads-up / full-screen call style)
+  flutter_local_notifications: ^17.2.2
+
   # --- END OF PACKAGES ---
 
   cupertino_icons: ^1.0.6

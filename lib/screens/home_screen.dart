@@ -8,6 +8,7 @@ import 'package:provider/provider.dart';
 import 'package:voice_guardian_app/providers/auth_provider.dart';
 import 'package:voice_guardian_app/services/api_service.dart';
 import 'package:voice_guardian_app/screens/call_screen.dart';
+import 'package:voice_guardian_app/utils/respectfulness_utils.dart';
 
 class HomeTab extends StatefulWidget {
   const HomeTab({super.key, this.refreshTrigger});
@@ -255,6 +256,7 @@ class _HomeTabState extends State<HomeTab> {
               final respectfulnessValue = respectfulnessRaw is num
                   ? respectfulnessRaw.toDouble()
                   : double.tryParse(respectfulnessRaw?.toString() ?? '') ?? 0.0;
+              final grade = respectfulnessGrade(respectfulnessValue);
 
               return Card(
                 elevation: 0,
@@ -268,7 +270,7 @@ class _HomeTabState extends State<HomeTab> {
                   ),
                   title: Text(friendData['username']),
                   subtitle: Text(
-                    "Respectfulness: ${respectfulnessValue.toStringAsFixed(1)}%",
+                    'Respectfulness: $grade',
                   ),
                   trailing: IconButton(
                     icon: const Icon(Icons.call, color: Colors.green),

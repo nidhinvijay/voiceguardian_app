@@ -13,10 +13,12 @@ class AuthProvider with ChangeNotifier {
   String? _token;
   String? _username;
   StreamSubscription<String>? _tokenRefreshSubscription;
+  bool _isInitializing = true;
 
   String? get token => _token;
   String? get username => _username;
   bool get isLoggedIn => _token != null;
+  bool get isInitializing => _isInitializing;
 
   AuthProvider() {
     _loadToken(); // Try to load token on app start
@@ -24,13 +26,19 @@ class AuthProvider with ChangeNotifier {
 
   // Load token from device storage
   Future<void> _loadToken() async {
-    final prefs = await SharedPreferences.getInstance();
-    _token = prefs.getString('token');
-    _username = prefs.getString('username');
-    if (_token != null) {
-      debugPrint("Token loaded from storage!");
-      await _registerDeviceToken();
-      _startTokenRefreshListener();
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      _token = prefs.getString('token');
+      _username = prefs.getString('username');
+      if (_token != null) {
+        debugPrint("Token loaded from storage!");
+        await _registerDeviceToken();
+        _startTokenRefreshListener();
+      }
+    } catch (error) {
+      debugPrint("Failed to load stored token: $error");
+    } finally {
+      _isInitializing = false;
       notifyListeners();
     }
   }

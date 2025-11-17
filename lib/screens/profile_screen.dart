@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'package:voice_guardian_app/providers/auth_provider.dart';
 import 'package:voice_guardian_app/services/api_service.dart';
+import 'package:voice_guardian_app/utils/respectfulness_utils.dart';
 
 class ProfileTab extends StatefulWidget {
   const ProfileTab({super.key});
@@ -172,7 +173,7 @@ class _ProfileTabState extends State<ProfileTab> {
                           ),
                           const SizedBox(width: 16),
                           Text(
-                            '${respectValue.toStringAsFixed(1)}%',
+                            respectfulnessGrade(respectValue),
                             style: theme.textTheme.titleMedium?.copyWith(
                               fontWeight: FontWeight.bold,
                             ),

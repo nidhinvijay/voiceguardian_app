@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'package:voice_guardian_app/providers/auth_provider.dart';
 import 'package:voice_guardian_app/services/api_service.dart';
+import 'package:voice_guardian_app/utils/respectfulness_utils.dart';
 
 class FriendsTab extends StatefulWidget {
   const FriendsTab({super.key, this.onFriendshipChanged});
@@ -295,7 +296,7 @@ class _FriendsTabState extends State<FriendsTab> {
                       ),
                       title: Text(username),
                       subtitle: Text(
-                        'Respectfulness: ${respectValue.toStringAsFixed(1)}%',
+                        'Respectfulness: ${respectfulnessGrade(respectValue)}',
                       ),
                       trailing: ElevatedButton(
                         onPressed: friendshipId == null

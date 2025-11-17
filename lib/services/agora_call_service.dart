@@ -1,12 +1,14 @@
 // lib/services/agora_call_service.dart
 
-import 'package:flutter/foundation.dart';
-import 'package:agora_rtc_engine/agora_rtc_engine.dart';
-import 'package:voice_guardian_app/services/transcription_service.dart';
+import 'dart:async';
 import 'dart:typed_data';
 import 'dart:convert';
 import 'dart:io';
+
+import 'package:flutter/foundation.dart';
+import 'package:agora_rtc_engine/agora_rtc_engine.dart';
 import 'package:path_provider/path_provider.dart';
+import 'package:voice_guardian_app/services/transcription_service.dart';
 
 class AgoraCallService extends ChangeNotifier {
   RtcEngine? _engine;
@@ -17,6 +19,7 @@ class AgoraCallService extends ChangeNotifier {
   bool _isSpeakerOn = true;
   int? _remoteUid;
   bool _isAudioMixing = false;
+  Completer<void>? _audioMixingCompleter;
 
   static const int _audioSampleRate = 16000;
   static const int _audioSamplesPerCall = 1024;
@@ -121,6 +124,12 @@ class AgoraCallService extends ChangeNotifier {
           onAudioMixingStateChanged: (state, reason) {
             final isPlaying = state == AudioMixingStateType.audioMixingStatePlaying;
             _isAudioMixing = isPlaying;
+            if (state == AudioMixingStateType.audioMixingStateStopped &&
+                _audioMixingCompleter != null &&
+                !_audioMixingCompleter!.isCompleted) {
+              _audioMixingCompleter!.complete();
+              _audioMixingCompleter = null;
+            }
             notifyListeners();
           },
         ),
@@ -174,14 +183,28 @@ class AgoraCallService extends ChangeNotifier {
       final path = '${dir.path}/coach_${DateTime.now().millisecondsSinceEpoch}.mp3';
       final file = File(path);
       await file.writeAsBytes(bytes, flush: true);
+      final previousCompleter = _audioMixingCompleter;
+      if (previousCompleter != null && !previousCompleter.isCompleted) {
+        await previousCompleter.future;
+      }
+      _audioMixingCompleter = Completer<void>();
       await _engine!.startAudioMixing(
         filePath: file.path,
         loopback: false,
         cycle: 1,
       );
       debugPrint('AGORA: Coach audio mixing started: ${file.path}');
+      if (_audioMixingCompleter != null) {
+        await _audioMixingCompleter!.future;
+      }
+      debugPrint('AGORA: Coach audio mixing completed: ${file.path}');
     } catch (e) {
       debugPrint('AGORA: Failed to play coach audio: $e');
+      if (_audioMixingCompleter != null &&
+          !_audioMixingCompleter!.isCompleted) {
+        _audioMixingCompleter!.complete();
+      }
+      _audioMixingCompleter = null;
     }
   }
   

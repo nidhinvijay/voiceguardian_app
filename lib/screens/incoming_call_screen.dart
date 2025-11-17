@@ -9,6 +9,7 @@ import 'package:voice_guardian_app/providers/auth_provider.dart';
 import 'package:voice_guardian_app/services/api_service.dart';
 import 'package:voice_guardian_app/services/call_state_service.dart';
 import 'package:voice_guardian_app/screens/call_screen.dart';
+import 'package:voice_guardian_app/utils/respectfulness_utils.dart';
 
 class IncomingCallScreen extends StatefulWidget {
   final String roomName;
@@ -189,7 +190,8 @@ class _IncomingCallScreenState extends State<IncomingCallScreen> {
   @override
   Widget build(BuildContext context) {
     final respectfulness = double.tryParse(widget.callerRespectfulness) ?? 0.0;
-    final isRespectful = respectfulness >= 3.5;
+    final gradeLabel = respectfulnessGrade(respectfulness);
+    final isRespectful = respectfulness >= 60;
 
     return Scaffold(
       backgroundColor: const Color(0xFF1F2C34),
@@ -261,7 +263,7 @@ class _IncomingCallScreenState extends State<IncomingCallScreen> {
                       ),
                       const SizedBox(width: 8),
                       Text(
-                        'Respectfulness: ${respectfulness.toStringAsFixed(1)}',
+                        'Respectfulness: $gradeLabel',
                         style: TextStyle(
                           color: isRespectful ? Colors.green : Colors.orange,
                           fontSize: 14,

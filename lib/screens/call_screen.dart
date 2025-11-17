@@ -7,6 +7,7 @@ import 'package:voice_guardian_app/providers/auth_provider.dart';
 import 'package:voice_guardian_app/services/api_service.dart';
 import 'package:voice_guardian_app/services/call_state_service.dart';
 import 'package:voice_guardian_app/services/agora_call_service.dart';
+import 'package:voice_guardian_app/services/permission_service.dart';
 import 'package:voice_guardian_app/services/transcription_service.dart';
 
 class CallScreen extends StatefulWidget {
@@ -37,6 +38,10 @@ class _CallScreenState extends State<CallScreen> {
   late final TranscriptionService _transcriptionService;
   String? _lastRephraseText;
   DateTime? _lastRephraseAt;
+  static const String _toxicityWarningText =
+      'This is disrespectful; you can say it like this instead.';
+  Future<void> _audioQueue = Future<void>.value();
+  bool _isCoachAudioPlaying = false;
 
   bool _isConnecting = true;
   bool _hasCallEnded = false;
@@ -55,10 +60,6 @@ class _CallScreenState extends State<CallScreen> {
     _transcriptionService.onRephrase = (original, rephrased, toxicity) async {
       debugPrint('CallScreen: Rephrase callback triggered! original="$original" rephrased="$rephrased" toxicity=$toxicity');
       final now = DateTime.now();
-      if (_agoraService.isAudioMixing) {
-        debugPrint('CallScreen: Audio mixing already playing; skipping duplicate rephrase');
-        return;
-      }
       if (_lastRephraseText == rephrased &&
           _lastRephraseAt != null &&
           now.difference(_lastRephraseAt!).inSeconds < 5) {
@@ -67,24 +68,15 @@ class _CallScreenState extends State<CallScreen> {
       }
       _lastRephraseText = rephrased;
       _lastRephraseAt = now;
-      try {
-        debugPrint('CallScreen: Requesting TTS for: "$rephrased"');
-        final resp = await _apiService.synthesizeTts(
-          token: _authProvider.token!,
-          text: rephrased,
-        );
-        debugPrint('CallScreen: TTS response received');
-        final audioB64 = resp['audio_mp3_base64'] as String?;
-        if (audioB64 != null) {
-          debugPrint('CallScreen: Playing coach audio (${audioB64.length} bytes base64)');
-          await _agoraService.playCoachAudioBase64(audioB64);
-          debugPrint('CallScreen: Coach audio playback started');
-        } else {
-          debugPrint('CallScreen: No audio data in TTS response');
-        }
-      } catch (e) {
-        debugPrint('CallScreen: TTS error: $e');
+      await _requestAndQueueAudio(rephrased, label: 'rephrase');
+    };
+    _transcriptionService.onToxicDetected = (transcript, toxicity) {
+      if (_shouldIgnoreToxicTranscript(transcript)) {
+        debugPrint('CallScreen: Skipping toxic transcript because it matches coach audio');
+        return;
       }
+      debugPrint('CallScreen: Toxic content detected (score=$toxicity) -> "$transcript"');
+      _requestAndQueueAudio(_toxicityWarningText, label: 'warning');
     };
 
     // Listen for remote user leaving
@@ -102,6 +94,16 @@ class _CallScreenState extends State<CallScreen> {
   }
 
   Future<void> _joinChannel() async {
+    if (!await _ensureMicrophonePermission()) {
+      if (mounted) {
+        setState(() {
+          _status = "Microphone permission required";
+          _isConnecting = false;
+        });
+      }
+      return;
+    }
+
     try {
       String token = widget.agoraToken ?? '';
       
@@ -148,6 +150,79 @@ class _CallScreenState extends State<CallScreen> {
     }
   }
 
+  Future<bool> _ensureMicrophonePermission() async {
+    if (await PermissionService.isMicrophoneGranted()) {
+      return true;
+    }
+
+    final granted = await PermissionService.requestMicrophone();
+    if (granted) {
+      return true;
+    }
+
+    if (!mounted) {
+      return false;
+    }
+
+    final messenger = ScaffoldMessenger.of(context);
+    messenger.showSnackBar(
+      SnackBar(
+        content: const Text('Microphone access is required to join the call.'),
+        action: SnackBarAction(
+          label: 'Settings',
+          onPressed: PermissionService.openAppSettings,
+        ),
+      ),
+    );
+    return false;
+  }
+
+  Future<void> _requestAndQueueAudio(String text, {required String label}) async {
+    try {
+      debugPrint('CallScreen: Requesting TTS ($label): "$text"');
+      final response = await _apiService.synthesizeTts(
+        token: _authProvider.token!,
+        text: text,
+      );
+      debugPrint('CallScreen: TTS response received ($label)');
+      final audioB64 = response['audio_mp3_base64'] as String?;
+      if (audioB64 != null) {
+        debugPrint('CallScreen: Queuing $label audio (${audioB64.length} bytes base64)');
+        final playbackFuture = _audioQueue.then((_) => _playQueuedAudio(audioB64, label));
+        _audioQueue = playbackFuture.catchError((error) {
+          debugPrint('CallScreen: Audio playback error ($label): $error');
+        });
+      } else {
+        debugPrint('CallScreen: $label TTS response missing audio');
+      }
+    } catch (e) {
+      debugPrint('CallScreen: $label TTS error: $e');
+    }
+  }
+
+  Future<void> _playQueuedAudio(String audioB64, String label) async {
+    try {
+      _isCoachAudioPlaying = true;
+      debugPrint('CallScreen: Starting queued $label audio');
+      await _agoraService.playCoachAudioBase64(audioB64);
+    } finally {
+      _isCoachAudioPlaying = false;
+      debugPrint('CallScreen: Finished queued $label audio');
+    }
+  }
+
+  bool _shouldIgnoreToxicTranscript(String transcript) {
+    if (_isCoachAudioPlaying) return true;
+    final lower = transcript.toLowerCase();
+    if (lower.contains('you can say it like this instead')) {
+      return true;
+    }
+    if (lower.contains('this is disrespectful')) {
+      return true;
+    }
+    return false;
+  }
+
   Future<void> _endCall() async {
     if (_hasCallEnded) return;
     _hasCallEnded = true;
@@ -192,6 +267,7 @@ class _CallScreenState extends State<CallScreen> {
   void dispose() {
     _agoraService.onRemoteUserLeft = null; // Clear callback
     _transcriptionService.onRephrase = null;
+    _transcriptionService.onToxicDetected = null;
     if (!_hasCallEnded) {
       _endCall();
     }

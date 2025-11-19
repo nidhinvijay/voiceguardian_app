@@ -37,12 +37,16 @@ Future<void> _openIncomingCallUi({
 }) async {
   debugPrint('MAIN: Navigating to incoming call UI for $callerUsername');
 
-  // Clear any previous heads-up notification once we surface the in-app sheet.
-  await notificationService.clearIncomingCallNotification();
-
   final context = navigatorKey.currentContext;
   if (context == null) {
     debugPrint('Navigator context unavailable, cannot show incoming call UI');
+    return;
+  }
+
+  // Clear any previous heads-up notification once we surface the in-app sheet.
+  await notificationService.clearIncomingCallNotification();
+  if (!context.mounted) {
+    debugPrint('Navigator context unmounted, cannot show incoming call UI');
     return;
   }
 
@@ -88,18 +92,18 @@ Future<bool> _handleCallSignal(RemoteMessage message) async {
   final type = message.data['type'];
   debugPrint('FCM: Handling call signal type=$type payload=${message.data}');
   if (type == 'call_cancelled' || type == 'call_declined') {
+    final navigator = navigatorKey.currentState;
+    final context = navigatorKey.currentContext;
     await notificationService.clearIncomingCallNotification();
     final actor = message.data['cancelled_by'] ??
         message.data['declined_by'] ??
         (type == 'call_declined' ? 'The other participant' : 'The caller');
     final reason = type == 'call_declined' ? 'declined the call.' : 'cancelled the call.';
 
-    final navigator = navigatorKey.currentState;
-    if (navigator != null && navigator.canPop()) {
+    if (navigator != null && navigator.mounted && navigator.canPop()) {
       navigator.pop();
     }
-    final context = navigatorKey.currentContext;
-    if (context != null) {
+    if (context != null && context.mounted) {
       final callState = Provider.of<CallStateService>(context, listen: false);
       callState.markEnded(endedBy: actor);
       callState.reset();
@@ -117,8 +121,10 @@ Future<void> _handleNotificationTap(
   Map<String, dynamic> payload,
   String? actionId,
 ) async {
-  if (navigatorKey.currentContext == null) {
+  BuildContext? context = navigatorKey.currentContext;
+  if (context == null) {
     await Future.delayed(const Duration(milliseconds: 300));
+    context = navigatorKey.currentContext;
   }
   final type = payload['type'];
   if (type != 'incoming_call') {
@@ -132,8 +138,7 @@ Future<void> _handleNotificationTap(
 
   if (actionId == 'decline_call') {
     debugPrint('Notification action: decline_call');
-    final context = navigatorKey.currentContext;
-    if (context != null) {
+    if (context != null && context.mounted) {
       final auth = Provider.of<AuthProvider>(context, listen: false);
       final token = auth.token;
       if (token != null && roomName != null && callerUsername != null) {
@@ -146,6 +151,11 @@ Future<void> _handleNotificationTap(
         } catch (error) {
           debugPrint('Failed to decline call from notification: $error');
         }
+      }
+
+      if (!context.mounted) {
+        await notificationService.clearIncomingCallNotification();
+        return;
       }
 
       final callState =

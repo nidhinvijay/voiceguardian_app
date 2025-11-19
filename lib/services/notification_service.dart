@@ -22,12 +22,17 @@ class NotificationService {
   final FlutterLocalNotificationsPlugin _plugin =
       FlutterLocalNotificationsPlugin();
 
+  NotificationTapHandler? _tapHandler;
+
   static const String _callChannelId = 'incoming_calls';
   static const int _callNotificationId = 2210;
 
   /// Initializes the plugin and call notification channel.
   /// Safe to call multiple times (last provided tap handler wins).
   Future<void> init({NotificationTapHandler? onNotificationTap}) async {
+    if (onNotificationTap != null) {
+      _tapHandler = onNotificationTap;
+    }
     const androidInit = AndroidInitializationSettings('@mipmap/ic_launcher');
     final settings = const InitializationSettings(android: androidInit);
 
@@ -35,12 +40,15 @@ class NotificationService {
       settings,
       onDidReceiveNotificationResponse: (response) async {
         final payload = response.payload;
-        if (payload == null || payload.isEmpty || onNotificationTap == null) {
+        if (payload == null || payload.isEmpty) {
           return;
         }
         try {
           final decoded = jsonDecode(payload) as Map<String, dynamic>;
-          await onNotificationTap(decoded, response.actionId);
+          final handler = _tapHandler;
+          if (handler != null) {
+            await handler(decoded, response.actionId);
+          }
         } catch (error) {
           debugPrint('Failed to handle notification tap: $error');
         }
@@ -94,13 +102,13 @@ class NotificationService {
         AndroidNotificationAction(
           'accept_call',
           'Accept',
-          showsUserInterface: true,
+          showsUserInterface: false,
           cancelNotification: true,
         ),
         AndroidNotificationAction(
           'decline_call',
           'Decline',
-          showsUserInterface: true,
+          showsUserInterface: false,
           cancelNotification: true,
         ),
       ],

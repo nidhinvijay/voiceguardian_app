@@ -16,19 +16,31 @@ class _RegisterScreenState extends State<RegisterScreen> {
   final _phoneController = TextEditingController();
   final _passwordController = TextEditingController();
   String _message = '';
+  bool _isSubmitting = false;
 
   Future<void> _register() async {
-    setState(() { _message = 'Registering...'; });
+    if (_isSubmitting) return;
+    setState(() {
+      _isSubmitting = true;
+      _message = 'Registering...';
+    });
     try {
       await Provider.of<AuthProvider>(context, listen: false).register(
         _usernameController.text,
         _phoneController.text,
         _passwordController.text,
       );
-      // If successful, the AuthProvider automatically logs in
-      // and the app state will change, navigating us to home screen.
+      if (!mounted) return;
+      // AuthProvider now has a token; go to home (clear back stack).
+      Navigator.of(context).pushNamedAndRemoveUntil('/', (route) => false);
     } catch (e) {
-      setState(() { _message = 'Registration Failed: $e'; });
+      setState(() {
+        _message = 'Registration Failed: $e';
+      });
+    } finally {
+      if (mounted) {
+        setState(() => _isSubmitting = false);
+      }
     }
   }
 
@@ -48,7 +60,11 @@ class _RegisterScreenState extends State<RegisterScreen> {
             const SizedBox(height: 12),
             TextField(
               controller: _phoneController,
-              decoration: const InputDecoration(labelText: 'Phone Number (+91...)'),
+              decoration: const InputDecoration(
+                labelText: 'Phone Number',
+                prefixText: '+91 ',
+              ),
+              keyboardType: TextInputType.phone,
             ),
             const SizedBox(height: 12),
             TextField(
@@ -58,8 +74,14 @@ class _RegisterScreenState extends State<RegisterScreen> {
             ),
             const SizedBox(height: 20),
             ElevatedButton(
-              onPressed: _register,
-              child: const Text('Register'),
+              onPressed: _isSubmitting ? null : _register,
+              child: _isSubmitting
+                  ? const SizedBox(
+                      height: 16,
+                      width: 16,
+                      child: CircularProgressIndicator(strokeWidth: 2),
+                    )
+                  : const Text('Register'),
             ),
             const SizedBox(height: 20),
             if (_message.isNotEmpty)

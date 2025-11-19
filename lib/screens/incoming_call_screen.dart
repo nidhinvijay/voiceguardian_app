@@ -140,6 +140,7 @@ class _IncomingCallScreenState extends State<IncomingCallScreen> {
     setState(() => _isProcessing = true);
     _timeoutTimer?.cancel();
 
+    final callStateService = Provider.of<CallStateService>(context, listen: false);
     try {
       final auth = Provider.of<AuthProvider>(context, listen: false);
       final token = auth.token;
@@ -154,7 +155,6 @@ class _IncomingCallScreenState extends State<IncomingCallScreen> {
     } catch (error) {
       debugPrint('Failed to notify caller about decline: $error');
     } finally {
-      final callStateService = Provider.of<CallStateService>(context, listen: false);
       callStateService.markEnded(endedBy: widget.callerName);
       callStateService.reset();
       
@@ -206,10 +206,10 @@ class _IncomingCallScreenState extends State<IncomingCallScreen> {
                 Container(
                   width: 120,
                   height: 120,
-                  decoration: BoxDecoration(
-                    shape: BoxShape.circle,
-                    color: Colors.white.withOpacity(0.1),
-                  ),
+                    decoration: BoxDecoration(
+                      shape: BoxShape.circle,
+                      color: Colors.white.withValues(alpha: 0.1),
+                    ),
                   child: const Icon(
                     Icons.person,
                     size: 60,
@@ -241,18 +241,18 @@ class _IncomingCallScreenState extends State<IncomingCallScreen> {
                     horizontal: 16,
                     vertical: 8,
                   ),
-                  decoration: BoxDecoration(
-                    color: isRespectful
-                        ? Colors.green.withOpacity(0.2)
-                        : Colors.orange.withOpacity(0.2),
-                    borderRadius: BorderRadius.circular(20),
-                    border: Border.all(
+                    decoration: BoxDecoration(
                       color: isRespectful
-                          ? Colors.green
-                          : Colors.orange,
-                      width: 1,
+                          ? Colors.green.withValues(alpha: 0.2)
+                          : Colors.orange.withValues(alpha: 0.2),
+                      borderRadius: BorderRadius.circular(20),
+                      border: Border.all(
+                        color: isRespectful
+                            ? Colors.green
+                            : Colors.orange,
+                        width: 1,
+                      ),
                     ),
-                  ),
                   child: Row(
                     mainAxisSize: MainAxisSize.min,
                     children: [

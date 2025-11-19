@@ -97,11 +97,12 @@ class _HistoryTabState extends State<HistoryTab> {
 
   @override
   Widget build(BuildContext context) {
-    final auth = Provider.of<AuthProvider>(context);
+    final token = context.select((AuthProvider auth) => auth.token);
+    final username = context.select((AuthProvider auth) => auth.username ?? '');
     final theme = Theme.of(context);
     final future = _historyFuture;
 
-    if (auth.token == null) {
+    if (token == null) {
       return Center(
         child: Padding(
           padding: const EdgeInsets.symmetric(horizontal: 24.0),
@@ -191,7 +192,7 @@ class _HistoryTabState extends State<HistoryTab> {
               final startedAt = record['started_at']?.toString();
               final endedAt = record['ended_at']?.toString();
               final durationLabel = _formatDuration(record['duration_seconds']);
-              final directionOutgoing = caller == auth.username;
+              final directionOutgoing = caller == username;
               final counterpart = directionOutgoing ? callee : caller;
               final title = directionOutgoing ? 'Outgoing to $counterpart' : 'Incoming from $counterpart';
               final statusColor = _statusColor(context, status);
@@ -205,24 +206,26 @@ class _HistoryTabState extends State<HistoryTab> {
                 subtitle.write(' • $durationLabel');
               }
 
-              return Card(
-                elevation: 0,
-                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-                child: ListTile(
-                  leading: CircleAvatar(
-                    backgroundColor: statusColor.withValues(alpha: 0.12),
-                    child: Icon(
-                      directionOutgoing ? Icons.north_east : Icons.south_west,
-                      color: statusColor,
+              return RepaintBoundary(
+                child: Card(
+                  elevation: 0,
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+                  child: ListTile(
+                    leading: CircleAvatar(
+                      backgroundColor: statusColor.withValues(alpha: 0.12),
+                      child: Icon(
+                        directionOutgoing ? Icons.north_east : Icons.south_west,
+                        color: statusColor,
+                      ),
                     ),
-                  ),
-                  title: Text(title),
-                  subtitle: Text(subtitle.toString()),
-                  trailing: Text(
-                    status.toUpperCase(),
-                    style: theme.textTheme.labelSmall?.copyWith(
-                      fontWeight: FontWeight.bold,
-                      color: statusColor,
+                    title: Text(title),
+                    subtitle: Text(subtitle.toString()),
+                    trailing: Text(
+                      status.toUpperCase(),
+                      style: theme.textTheme.labelSmall?.copyWith(
+                        fontWeight: FontWeight.bold,
+                        color: statusColor,
+                      ),
                     ),
                   ),
                 ),

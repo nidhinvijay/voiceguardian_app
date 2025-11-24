@@ -34,21 +34,30 @@ Future<void> _openIncomingCallUi({
   required String? roomName,
   required String? callerUsername,
   required String callerRespectfulness,
+  bool suppressInAppTone = false,
 }) async {
   debugPrint('MAIN: Navigating to incoming call UI for $callerUsername');
 
-  final context = navigatorKey.currentContext;
-  if (context == null) {
-    debugPrint('Navigator context unavailable, cannot show incoming call UI');
+  NavigatorState? navigator = navigatorKey.currentState;
+  BuildContext? context = navigatorKey.currentContext;
+
+  if (navigator == null || context == null) {
+    for (var i = 0; i < 10; i++) {
+      await Future.delayed(const Duration(milliseconds: 150));
+      navigator = navigatorKey.currentState;
+      context = navigatorKey.currentContext;
+      if (navigator != null && context != null) {
+        break;
+      }
+    }
+  }
+
+  if (navigator == null || context == null || !context.mounted) {
+    debugPrint('Navigator unavailable, cannot show incoming call UI');
     return;
   }
 
-  // Clear any previous heads-up notification once we surface the in-app sheet.
   await notificationService.clearIncomingCallNotification();
-  if (!context.mounted) {
-    debugPrint('Navigator context unmounted, cannot show incoming call UI');
-    return;
-  }
 
   final callState = Provider.of<CallStateService>(
     context,
@@ -59,18 +68,22 @@ Future<void> _openIncomingCallUi({
     peerUsername: callerUsername ?? 'Unknown Caller',
   );
 
-  Navigator.of(context).push(
+  navigator.push(
     MaterialPageRoute(
       builder: (context) => IncomingCallScreen(
         roomName: roomName ?? 'unknown',
         callerName: callerUsername ?? 'Unknown',
         callerRespectfulness: callerRespectfulness,
+        shouldPlayRingtone: !suppressInAppTone,
       ),
     ),
   );
 }
 
-void _showIncomingCallScreen(RemoteMessage message) {
+void _showIncomingCallScreen(
+  RemoteMessage message, {
+  bool suppressInAppTone = false,
+}) {
   if (message.data['type'] != 'incoming_call') {
     return;
   }
@@ -84,6 +97,7 @@ void _showIncomingCallScreen(RemoteMessage message) {
       roomName: roomName,
       callerUsername: callerUsername,
       callerRespectfulness: callerRespectfulness,
+      suppressInAppTone: suppressInAppTone,
     ),
   );
 }
@@ -172,6 +186,7 @@ Future<void> _handleNotificationTap(
     roomName: roomName,
     callerUsername: callerUsername,
     callerRespectfulness: callerRespectfulness,
+    suppressInAppTone: true,
   );
 }
 
@@ -191,7 +206,7 @@ Future<void> _handleForegroundMessage(RemoteMessage message) async {
     );
   }
   debugPrint('FCM: Foreground message routed to _showIncomingCallScreen');
-  _showIncomingCallScreen(message);
+  _showIncomingCallScreen(message, suppressInAppTone: true);
 }
 
 

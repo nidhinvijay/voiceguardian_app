@@ -24,8 +24,9 @@ class NotificationService {
 
   NotificationTapHandler? _tapHandler;
 
-  static const String _callChannelId = 'incoming_calls';
+  static const String _callChannelId = 'incoming_calls_v2';
   static const int _callNotificationId = 2210;
+  static const String _defaultRingtoneUri = 'content://settings/system/ringtone';
 
   /// Initializes the plugin and call notification channel.
   /// Safe to call multiple times (last provided tap handler wins).
@@ -67,12 +68,25 @@ class NotificationService {
       playSound: true,
       enableVibration: true,
       enableLights: true,
+      sound: UriAndroidNotificationSound(_defaultRingtoneUri),
+      audioAttributesUsage: AudioAttributesUsage.notificationRingtone,
     );
 
-    await _plugin
-        .resolvePlatformSpecificImplementation<
-            AndroidFlutterLocalNotificationsPlugin>()
-        ?.createNotificationChannel(channel);
+    final androidPlugin =
+        _plugin.resolvePlatformSpecificImplementation<
+            AndroidFlutterLocalNotificationsPlugin>();
+    if (androidPlugin == null) {
+      return;
+    }
+
+    // Remove any previous version of the channel so updated sound settings apply.
+    try {
+      await androidPlugin.deleteNotificationChannel(_callChannelId);
+    } catch (error) {
+      debugPrint('NotificationService: failed to delete call channel: $error');
+    }
+
+    await androidPlugin.createNotificationChannel(channel);
   }
 
   Future<void> showIncomingCallNotification({
@@ -98,6 +112,8 @@ class NotificationService {
       autoCancel: false,
       ongoing: true,
       visibility: NotificationVisibility.public,
+      sound: UriAndroidNotificationSound(_defaultRingtoneUri),
+      audioAttributesUsage: AudioAttributesUsage.notificationRingtone,
       actions: <AndroidNotificationAction>[
         AndroidNotificationAction(
           'accept_call',

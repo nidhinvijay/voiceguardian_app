@@ -66,6 +66,36 @@ if (project.name == "twilio_programmable_video") {
             }
         }
     }
+    if (project.name == "flutter_ringtone_player") {
+        project.buildFile.parentFile.resolve("build.gradle").let { buildFile ->
+            if (buildFile.exists()) {
+                val content = buildFile.readText()
+                if (!content.contains("namespace")) {
+                    buildFile.writeText(
+                        content.replace(
+                            "android {",
+                            "android {\n    namespace 'io.github.andob.flutter_ringtone_player'"
+                        )
+                    )
+                }
+            }
+        }
+        project.buildFile.parentFile
+            .resolve("src/main/AndroidManifest.xml")
+            .let { manifestFile ->
+                if (manifestFile.exists()) {
+                    val content = manifestFile.readText()
+                    if (content.contains("package=")) {
+                        manifestFile.writeText(
+                            content.replace(
+                                Regex("""package="[^"]+"\s*"""),
+                                ""
+                            )
+                        )
+                    }
+                }
+            }
+    }
     if (project.name == "contacts_service") {
         project.buildFile.parentFile.resolve("build.gradle").let { buildFile ->
             if (buildFile.exists()) {

@@ -42,7 +42,7 @@ class _MainShellState extends State<MainShell> {
 
   @override
   Widget build(BuildContext context) {
-    final titles = ['Chats', 'History', 'Friends', 'Profile'];
+    final titles = ['Calls', 'History', 'Friends', 'Profile'];
     final theme = Theme.of(context);
 
     return Scaffold(

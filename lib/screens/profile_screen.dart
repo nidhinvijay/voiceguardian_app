@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'package:voice_guardian_app/providers/auth_provider.dart';
 import 'package:voice_guardian_app/services/api_service.dart';
+import 'package:voice_guardian_app/utils/respectfulness_utils.dart';
 
 class ProfileTab extends StatefulWidget {
   const ProfileTab({super.key});
@@ -15,6 +16,8 @@ class ProfileTab extends StatefulWidget {
 class _ProfileTabState extends State<ProfileTab> {
   late final ApiService _apiService;
   Future<Map<String, dynamic>>? _profileFuture;
+  double? _pendingPerspectiveValue;
+  bool _isSavingPerspective = false;
 
   @override
   void initState() {
@@ -46,6 +49,31 @@ class _ProfileTabState extends State<ProfileTab> {
       _profileFuture = _apiService.getCurrentUser(token: auth.token!);
     });
     await _profileFuture;
+  }
+
+  Future<void> _updatePerspectiveThreshold(double value) async {
+    setState(() {
+      _isSavingPerspective = true;
+    });
+    final messenger = ScaffoldMessenger.of(context);
+    try {
+      await Provider.of<AuthProvider>(context, listen: false)
+          .updatePerspectiveThreshold(value);
+      messenger.showSnackBar(
+        SnackBar(content: Text('Perspective preference saved (${value.toStringAsFixed(2)})')),
+      );
+    } catch (error) {
+      messenger.showSnackBar(
+        SnackBar(content: Text('Failed to save perspective: $error')),
+      );
+    } finally {
+      if (mounted) {
+        setState(() {
+          _isSavingPerspective = false;
+          _pendingPerspectiveValue = null;
+        });
+      }
+    }
   }
 
   @override
@@ -151,13 +179,13 @@ class _ProfileTabState extends State<ProfileTab> {
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      Text(
-                        'Respectfulness Score',
-                        style: theme.textTheme.titleMedium?.copyWith(
-                          color: theme.colorScheme.primary,
-                          fontWeight: FontWeight.w600,
-                        ),
-                      ),
+              Text(
+                'Respectfulness Score',
+                style: theme.textTheme.titleMedium?.copyWith(
+                  color: theme.colorScheme.primary,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
                       const SizedBox(height: 12),
                       Row(
                         children: [
@@ -172,7 +200,7 @@ class _ProfileTabState extends State<ProfileTab> {
                           ),
                           const SizedBox(width: 16),
                           Text(
-                            '${respectValue.toStringAsFixed(1)}%',
+                            respectfulnessGrade(respectValue),
                             style: theme.textTheme.titleMedium?.copyWith(
                               fontWeight: FontWeight.bold,
                             ),
@@ -186,6 +214,74 @@ class _ProfileTabState extends State<ProfileTab> {
                           color: theme.colorScheme.onSurface.withValues(alpha: 0.6),
                         ),
                       ),
+                    ],
+                  ),
+                ),
+              ),
+              const SizedBox(height: 24),
+              Card(
+                elevation: 0,
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(16),
+                ),
+                child: Padding(
+                  padding: const EdgeInsets.all(24.0),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        'Perspective Sensitivity',
+                        style: theme.textTheme.titleMedium?.copyWith(
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                      const SizedBox(height: 12),
+                      Builder(
+                        builder: (context) {
+                          final sliderValue = (_pendingPerspectiveValue ?? auth.perspectiveThreshold)
+                              .clamp(0.05, 0.20)
+                              .toDouble();
+                          return Slider(
+                            min: 0.05,
+                            max: 0.20,
+                            value: sliderValue,
+                            divisions: 15,
+                            label: sliderValue.toStringAsFixed(2),
+                            onChanged: (value) {
+                              setState(() {
+                                _pendingPerspectiveValue = value;
+                              });
+                            },
+                            onChangeEnd: (value) {
+                              if ((auth.perspectiveThreshold - value).abs() < 0.001) {
+                                setState(() {
+                                  _pendingPerspectiveValue = null;
+                                });
+                                return;
+                              }
+                              _updatePerspectiveThreshold(value);
+                            },
+                          );
+                        },
+                      ),
+                      Row(
+                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                        children: const [
+                          Text('0.05 • Strict'),
+                          Text('0.20 • Moderate'),
+                        ],
+                      ),
+                      const SizedBox(height: 8),
+                      Text(
+                        'Lower values prompt coaching earlier; higher values tolerate more nuance.',
+                        style: theme.textTheme.bodyMedium?.copyWith(
+                          color: theme.colorScheme.onSurface.withValues(alpha: 0.6),
+                        ),
+                      ),
+                      if (_isSavingPerspective) ...[
+                        const SizedBox(height: 12),
+                        const LinearProgressIndicator(),
+                      ],
                     ],
                   ),
                 ),

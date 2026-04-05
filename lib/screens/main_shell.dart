@@ -17,34 +17,21 @@ class MainShell extends StatefulWidget {
 
 class _MainShellState extends State<MainShell> {
   int _currentIndex = 0;
-  late final ValueNotifier<int> _friendsRefreshNotifier = ValueNotifier<int>(0);
   late final List<Widget> _tabs;
 
   @override
   void initState() {
     super.initState();
-    _tabs = [
-      HomeTab(refreshTrigger: _friendsRefreshNotifier),
-      const HistoryTab(),
-      FriendsTab(onFriendshipChanged: _signalFriendsRefresh),
-      const ProfileTab(),
+    _tabs = const [
+      HomeTab(),
+      HistoryTab(),
+      FriendsTab(),
+      ProfileTab(),
     ];
   }
 
-  void _signalFriendsRefresh() {
-    _friendsRefreshNotifier.value++;
-  }
-
   List<Widget> _buildActions(BuildContext context) {
-    if (_currentIndex != 0) {
-      return const [];
-    }
     return [
-      IconButton(
-        icon: const Icon(Icons.refresh),
-        tooltip: 'Refresh friends',
-        onPressed: _signalFriendsRefresh,
-      ),
       IconButton(
         icon: const Icon(Icons.logout),
         tooltip: 'Logout',
@@ -55,7 +42,7 @@ class _MainShellState extends State<MainShell> {
 
   @override
   Widget build(BuildContext context) {
-    final titles = ['Chats', 'History', 'Friends', 'Profile'];
+    final titles = ['Calls', 'History', 'Friends', 'Profile'];
     final theme = Theme.of(context);
 
     return Scaffold(
@@ -72,9 +59,6 @@ class _MainShellState extends State<MainShell> {
         currentIndex: _currentIndex,
         onTap: (value) {
           setState(() => _currentIndex = value);
-          if (value == 0) {
-            _signalFriendsRefresh();
-          }
         },
         items: const [
           BottomNavigationBarItem(
@@ -102,9 +86,4 @@ class _MainShellState extends State<MainShell> {
     );
   }
 
-  @override
-  void dispose() {
-    _friendsRefreshNotifier.dispose();
-    super.dispose();
-  }
 }

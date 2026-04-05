@@ -1,12 +1,14 @@
 // lib/services/agora_call_service.dart
 
-import 'package:flutter/foundation.dart';
-import 'package:agora_rtc_engine/agora_rtc_engine.dart';
-import 'package:voice_guardian_app/services/transcription_service.dart';
-import 'dart:typed_data';
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+
+import 'package:flutter/foundation.dart';
+import 'package:flutter/services.dart' show rootBundle;
+import 'package:agora_rtc_engine/agora_rtc_engine.dart';
 import 'package:path_provider/path_provider.dart';
+import 'package:voice_guardian_app/services/transcription_service.dart';
 
 class AgoraCallService extends ChangeNotifier {
   RtcEngine? _engine;
@@ -17,6 +19,7 @@ class AgoraCallService extends ChangeNotifier {
   bool _isSpeakerOn = true;
   int? _remoteUid;
   bool _isAudioMixing = false;
+  Completer<void>? _audioMixingCompleter;
 
   static const int _audioSampleRate = 16000;
   static const int _audioSamplesPerCall = 1024;
@@ -74,17 +77,15 @@ class AgoraCallService extends ChangeNotifier {
         channel: 1,
         samplesPerCall: _audioSamplesPerCall,
       );
-      if (_audioFrameObserver == null) {
-        _audioFrameObserver = AudioFrameObserver(
-          onMixedAudioFrame: (channelId, audioFrame) {
-            final data = audioFrame.buffer;
-            if (data == null || data.isEmpty) {
-              return;
-            }
-            _handleAudioFrame(data);
-          },
-        );
-      }
+      _audioFrameObserver ??= AudioFrameObserver(
+        onMixedAudioFrame: (channelId, audioFrame) {
+          final data = audioFrame.buffer;
+          if (data == null || data.isEmpty) {
+            return;
+          }
+          _handleAudioFrame(data);
+        },
+      );
       _mediaEngine ??= _engine!.getMediaEngine();
       try {
         _mediaEngine?.registerAudioFrameObserver(_audioFrameObserver!);
@@ -121,6 +122,12 @@ class AgoraCallService extends ChangeNotifier {
           onAudioMixingStateChanged: (state, reason) {
             final isPlaying = state == AudioMixingStateType.audioMixingStatePlaying;
             _isAudioMixing = isPlaying;
+            if (state == AudioMixingStateType.audioMixingStateStopped &&
+                _audioMixingCompleter != null &&
+                !_audioMixingCompleter!.isCompleted) {
+              _audioMixingCompleter!.complete();
+              _audioMixingCompleter = null;
+            }
             notifyListeners();
           },
         ),
@@ -137,6 +144,7 @@ class AgoraCallService extends ChangeNotifier {
     required String channelName,
     required int uid,
     String? username,
+    double? perspectiveThreshold,
   }) async {
     try {
       debugPrint('AGORA: Joining channel: $channelName with uid: $uid');
@@ -144,6 +152,7 @@ class AgoraCallService extends ChangeNotifier {
         await _transcriptionService!.connect(
           channelName: channelName,
           username: username,
+          perspectiveThreshold: perspectiveThreshold,
         );
         _isTranscribing = true;
         notifyListeners();
@@ -167,22 +176,76 @@ class AgoraCallService extends ChangeNotifier {
     }
   }
   
-  Future<void> playCoachAudioBase64(String base64Mp3) async {
+  Future<void> playCoachAudioBase64(String base64Data, {String fileExtension = 'mp3'}) async {
+    final bytes = base64Decode(base64Data);
+    await playCoachAudioBytes(bytes, fileExtension: fileExtension);
+  }
+
+  Future<void> playCoachAudioBytes(Uint8List bytes, {String fileExtension = 'mp3'}) async {
+    String? path;
     try {
-      final bytes = base64Decode(base64Mp3);
-      final dir = await getTemporaryDirectory();
-      final path = '${dir.path}/coach_${DateTime.now().millisecondsSinceEpoch}.mp3';
-      final file = File(path);
-      await file.writeAsBytes(bytes, flush: true);
-      await _engine!.startAudioMixing(
-        filePath: file.path,
-        loopback: false,
-        cycle: 1,
-      );
-      debugPrint('AGORA: Coach audio mixing started: ${file.path}');
+      path = await _writeTemporaryAudio(bytes, fileExtension: fileExtension);
+      await _startAudioMixingFromPath(path);
     } catch (e) {
-      debugPrint('AGORA: Failed to play coach audio: $e');
+      debugPrint('AGORA: Failed to play coach audio bytes: $e');
+      if (_audioMixingCompleter != null && !_audioMixingCompleter!.isCompleted) {
+        _audioMixingCompleter!.complete();
+      }
+      _audioMixingCompleter = null;
+    } finally {
+      if (path != null) {
+        try {
+          await File(path).delete();
+        } catch (_) {
+          // Ignore cleanup errors.
+        }
+      }
     }
+  }
+
+  Future<void> playCoachAudioAsset(String assetPath) async {
+    try {
+      final data = await rootBundle.load(assetPath);
+      final bytes = data.buffer.asUint8List();
+      final ext = _inferExtension(assetPath);
+      await playCoachAudioBytes(bytes, fileExtension: ext);
+    } catch (error) {
+      debugPrint('AGORA: Failed to play asset audio ($assetPath): $error');
+    }
+  }
+
+  Future<String> _writeTemporaryAudio(Uint8List bytes, {required String fileExtension}) async {
+    final dir = await getTemporaryDirectory();
+    final filename = 'coach_${DateTime.now().millisecondsSinceEpoch}.$fileExtension';
+    final file = File('${dir.path}/$filename');
+    await file.writeAsBytes(bytes, flush: true);
+    return file.path;
+  }
+
+  Future<void> _startAudioMixingFromPath(String path) async {
+    final previousCompleter = _audioMixingCompleter;
+    if (previousCompleter != null && !previousCompleter.isCompleted) {
+      await previousCompleter.future;
+    }
+    _audioMixingCompleter = Completer<void>();
+    await _engine!.startAudioMixing(
+      filePath: path,
+      loopback: false,
+      cycle: 1,
+    );
+    debugPrint('AGORA: Coach audio mixing started: $path');
+    if (_audioMixingCompleter != null) {
+      await _audioMixingCompleter!.future;
+    }
+    debugPrint('AGORA: Coach audio mixing completed: $path');
+  }
+
+  String _inferExtension(String path) {
+    final segments = path.split('.');
+    if (segments.length < 2) {
+      return 'mp3';
+    }
+    return segments.last.toLowerCase();
   }
   
   Future<void> toggleMute() async {

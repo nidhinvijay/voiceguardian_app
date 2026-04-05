@@ -45,5 +45,9 @@
 	<true/>
 	<key>UIApplicationSupportsIndirectInputEvents</key>
 	<true/>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>Required to capture your voice during VoiceGuardian calls.</string>
+	<key>NSContactsUsageDescription</key>
+	<string>We need access to your contacts to highlight who already uses VoiceGuardian.</string>
 </dict>
 </plist>

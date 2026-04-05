@@ -4,22 +4,27 @@ import 'dart:async';
 
 import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter_ringtone_player/flutter_ringtone_player.dart';
 import 'package:provider/provider.dart';
 import 'package:voice_guardian_app/providers/auth_provider.dart';
 import 'package:voice_guardian_app/services/api_service.dart';
 import 'package:voice_guardian_app/services/call_state_service.dart';
+import 'package:voice_guardian_app/services/notification_service.dart';
 import 'package:voice_guardian_app/screens/call_screen.dart';
+import 'package:voice_guardian_app/utils/respectfulness_utils.dart';
 
 class IncomingCallScreen extends StatefulWidget {
   final String roomName;
   final String callerName;
   final String callerRespectfulness;
+  final bool shouldPlayRingtone;
 
   const IncomingCallScreen({
     super.key,
     required this.roomName,
     required this.callerName,
     required this.callerRespectfulness,
+    this.shouldPlayRingtone = true,
   });
 
   @override
@@ -28,9 +33,12 @@ class IncomingCallScreen extends StatefulWidget {
 
 class _IncomingCallScreenState extends State<IncomingCallScreen> {
   final ApiService _apiService = ApiService();
+  final FlutterRingtonePlayer _ringtonePlayer = FlutterRingtonePlayer();
+  final NotificationService _notificationService = NotificationService();
   bool _isProcessing = false;
   StreamSubscription<RemoteMessage>? _signalSubscription;
   Timer? _timeoutTimer;
+  bool _isRingtonePlaying = false;
 
   @override
   void initState() {
@@ -46,6 +54,8 @@ class _IncomingCallScreenState extends State<IncomingCallScreen> {
   void dispose() {
     _signalSubscription?.cancel();
     _timeoutTimer?.cancel();
+    _stopRingtone();
+    unawaited(_notificationService.clearIncomingCallNotification());
     super.dispose();
   }
 
@@ -70,18 +80,42 @@ class _IncomingCallScreenState extends State<IncomingCallScreen> {
     _timeoutTimer = Timer(const Duration(seconds: 45), () {
       if (mounted && !_isProcessing) {
         debugPrint('IncomingCallScreen: Call timed out');
+        _stopRingtone();
+        unawaited(_notificationService.clearIncomingCallNotification());
         Navigator.of(context).pop();
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(content: Text('Call timed out')),
         );
       }
     });
+
+    if (widget.shouldPlayRingtone) {
+      _startRingtone();
+    }
+  }
+
+  void _startRingtone() {
+    if (_isRingtonePlaying) return;
+    _ringtonePlayer.playRingtone(
+      looping: true,
+      volume: 1.0,
+      asAlarm: true,
+    );
+    _isRingtonePlaying = true;
+  }
+
+  void _stopRingtone() {
+    if (!_isRingtonePlaying) return;
+    _ringtonePlayer.stop();
+    _isRingtonePlaying = false;
   }
 
   Future<void> _acceptCall() async {
     if (_isProcessing) return;
     setState(() => _isProcessing = true);
     _timeoutTimer?.cancel();
+    _stopRingtone();
+    unawaited(_notificationService.clearIncomingCallNotification());
 
     try {
       debugPrint('IncomingCallScreen: User accepted call from ${widget.callerName}');
@@ -138,7 +172,10 @@ class _IncomingCallScreenState extends State<IncomingCallScreen> {
     if (_isProcessing) return;
     setState(() => _isProcessing = true);
     _timeoutTimer?.cancel();
+    _stopRingtone();
+    unawaited(_notificationService.clearIncomingCallNotification());
 
+    final callStateService = Provider.of<CallStateService>(context, listen: false);
     try {
       final auth = Provider.of<AuthProvider>(context, listen: false);
       final token = auth.token;
@@ -153,7 +190,6 @@ class _IncomingCallScreenState extends State<IncomingCallScreen> {
     } catch (error) {
       debugPrint('Failed to notify caller about decline: $error');
     } finally {
-      final callStateService = Provider.of<CallStateService>(context, listen: false);
       callStateService.markEnded(endedBy: widget.callerName);
       callStateService.reset();
       
@@ -169,6 +205,8 @@ class _IncomingCallScreenState extends State<IncomingCallScreen> {
 
     setState(() => _isProcessing = true);
     _timeoutTimer?.cancel();
+    _stopRingtone();
+    unawaited(_notificationService.clearIncomingCallNotification());
     
     final navigator = Navigator.of(context);
     final messenger = ScaffoldMessenger.of(context);
@@ -189,7 +227,8 @@ class _IncomingCallScreenState extends State<IncomingCallScreen> {
   @override
   Widget build(BuildContext context) {
     final respectfulness = double.tryParse(widget.callerRespectfulness) ?? 0.0;
-    final isRespectful = respectfulness >= 3.5;
+    final gradeLabel = respectfulnessGrade(respectfulness);
+    final isRespectful = respectfulness >= 60;
 
     return Scaffold(
       backgroundColor: const Color(0xFF1F2C34),
@@ -204,10 +243,10 @@ class _IncomingCallScreenState extends State<IncomingCallScreen> {
                 Container(
                   width: 120,
                   height: 120,
-                  decoration: BoxDecoration(
-                    shape: BoxShape.circle,
-                    color: Colors.white.withOpacity(0.1),
-                  ),
+                    decoration: BoxDecoration(
+                      shape: BoxShape.circle,
+                      color: Colors.white.withValues(alpha: 0.1),
+                    ),
                   child: const Icon(
                     Icons.person,
                     size: 60,
@@ -239,18 +278,18 @@ class _IncomingCallScreenState extends State<IncomingCallScreen> {
                     horizontal: 16,
                     vertical: 8,
                   ),
-                  decoration: BoxDecoration(
-                    color: isRespectful
-                        ? Colors.green.withOpacity(0.2)
-                        : Colors.orange.withOpacity(0.2),
-                    borderRadius: BorderRadius.circular(20),
-                    border: Border.all(
+                    decoration: BoxDecoration(
                       color: isRespectful
-                          ? Colors.green
-                          : Colors.orange,
-                      width: 1,
+                          ? Colors.green.withValues(alpha: 0.2)
+                          : Colors.orange.withValues(alpha: 0.2),
+                      borderRadius: BorderRadius.circular(20),
+                      border: Border.all(
+                        color: isRespectful
+                            ? Colors.green
+                            : Colors.orange,
+                        width: 1,
+                      ),
                     ),
-                  ),
                   child: Row(
                     mainAxisSize: MainAxisSize.min,
                     children: [
@@ -261,7 +300,7 @@ class _IncomingCallScreenState extends State<IncomingCallScreen> {
                       ),
                       const SizedBox(width: 8),
                       Text(
-                        'Respectfulness: ${respectfulness.toStringAsFixed(1)}',
+                        'Respectfulness: $gradeLabel',
                         style: TextStyle(
                           color: isRespectful ? Colors.green : Colors.orange,
                           fontSize: 14,

@@ -2,13 +2,14 @@
 
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
+import 'package:flutter_contacts/flutter_contacts.dart';
+import 'package:url_launcher/url_launcher.dart';
 import 'package:voice_guardian_app/providers/auth_provider.dart';
 import 'package:voice_guardian_app/services/api_service.dart';
+import 'package:voice_guardian_app/utils/phone_utils.dart';
 
 class FriendsTab extends StatefulWidget {
-  const FriendsTab({super.key, this.onFriendshipChanged});
-
-  final VoidCallback? onFriendshipChanged;
+  const FriendsTab({super.key});
 
   @override
   State<FriendsTab> createState() => _FriendsTabState();
@@ -16,303 +17,180 @@ class FriendsTab extends StatefulWidget {
 
 class _FriendsTabState extends State<FriendsTab> {
   final ApiService _apiService = ApiService();
-  final TextEditingController _usernameController = TextEditingController();
-  Future<List<dynamic>>? _pendingRequestsFuture;
-  bool _isSendingRequest = false;
+  bool _isSyncing = false;
+  String? _statusMessage;
 
   @override
   void didChangeDependencies() {
     super.didChangeDependencies();
-    _ensurePendingRequestsLoaded();
   }
 
-  @override
-  void dispose() {
-    _usernameController.dispose();
-    super.dispose();
-  }
-
-  void _ensurePendingRequestsLoaded() {
+  Future<void> _syncContacts() async {
     final auth = Provider.of<AuthProvider>(context, listen: false);
     final token = auth.token;
     if (token == null) {
       setState(() {
-        _pendingRequestsFuture = Future.value(<dynamic>[]);
+        _statusMessage = 'Log in to sync your contacts.';
       });
       return;
     }
 
-    _pendingRequestsFuture ??=
-        _apiService.getPendingFriendRequests(token: token);
-  }
-
-  Future<void> _refreshPendingRequests() async {
-    final auth = Provider.of<AuthProvider>(context, listen: false);
-    final token = auth.token;
-    if (token == null) {
+    final hasPermission = await FlutterContacts.requestPermission(readonly: true);
+    if (!hasPermission) {
       setState(() {
-        _pendingRequestsFuture = Future.value(<dynamic>[]);
+        _statusMessage = 'Contacts permission is required to sync your friends list.';
       });
       return;
     }
 
-    final future = _apiService.getPendingFriendRequests(token: token);
     setState(() {
-      _pendingRequestsFuture = future;
-    });
-    await future;
-    widget.onFriendshipChanged?.call();
-  }
-
-  Future<void> _sendFriendRequest() async {
-    final auth = Provider.of<AuthProvider>(context, listen: false);
-    final token = auth.token;
-    final username = _usernameController.text.trim();
-
-    if (token == null) {
-      _showSnackBar('Please log in to send friend requests.');
-      return;
-    }
-
-    if (username.isEmpty) {
-      _showSnackBar('Enter a username to send a request.');
-      return;
-    }
-
-    FocusScope.of(context).unfocus();
-
-    setState(() {
-      _isSendingRequest = true;
+      _isSyncing = true;
+      _statusMessage = null;
     });
 
     try {
-      await _apiService.sendFriendRequest(token: token, username: username);
-      if (!mounted) return;
-      _usernameController.clear();
-      _showSnackBar('Friend request sent to $username.');
+      final deviceContacts = await FlutterContacts.getContacts(withProperties: true);
+      final normalizedMap = <String, String>{};
+      for (final contact in deviceContacts) {
+        final displayName = contact.displayName.trim();
+        for (final phone in contact.phones) {
+          final raw = phone.number;
+          final normalized = normalizePhoneNumber(raw);
+          if (normalized.isEmpty) continue;
+          normalizedMap.putIfAbsent(normalized, () => displayName.isNotEmpty ? displayName : normalized);
+        }
+      }
+
+      final numbers = normalizedMap.keys.toList();
+      final matches = numbers.isEmpty
+          ? <Map<String, dynamic>>[]
+          : await _apiService.matchContacts(token: token, phoneNumbers: numbers);
+      final matchByPhone = <String, Map<String, dynamic>>{};
+      for (final match in matches) {
+        final phone = match['phone_number'];
+        if (phone is String) {
+          matchByPhone[phone] = match;
+        }
+      }
+
+      final synced = normalizedMap.entries.map((entry) {
+        final match = matchByPhone[entry.key];
+        return SyncedContact(
+          displayName: entry.value,
+          phoneNumber: entry.key,
+          username: match?['username'] as String?,
+          respectfulness: match?['respectfulness_score'] is num
+              ? (match?['respectfulness_score'] as num).toDouble()
+              : 0.0,
+        );
+      }).toList();
+
+      auth.updateSyncedContacts(synced);
+      setState(() {
+        _statusMessage =
+            'Synced ${synced.length} contacts; ${matches.length} are on VoiceGuardian.';
+      });
     } catch (error) {
-      if (!mounted) return;
-      _showSnackBar(_mapErrorToMessage(error));
+      setState(() {
+        _statusMessage = 'Failed to sync contacts: $error';
+      });
     } finally {
       if (mounted) {
         setState(() {
-          _isSendingRequest = false;
+          _isSyncing = false;
         });
       }
     }
   }
 
-  Future<void> _acceptFriendRequest(int friendshipId, String friendName) async {
-    final auth = Provider.of<AuthProvider>(context, listen: false);
-    final token = auth.token;
-    if (token == null) {
-      _showSnackBar('Please log in to accept friend requests.');
-      return;
-    }
-
-    try {
-      await _apiService.acceptFriendRequest(
-        token: token,
-        friendshipId: friendshipId,
-      );
-      if (!mounted) return;
-      _showSnackBar('You and $friendName are now friends!');
-      await _refreshPendingRequests();
-      widget.onFriendshipChanged?.call();
-    } catch (error) {
-      if (!mounted) return;
-      _showSnackBar(_mapErrorToMessage(error));
-    }
-  }
-
-  void _showSnackBar(String message) {
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text(message)),
+  Future<void> _launchSmsInvite(String phoneNumber) async {
+    final messenger = ScaffoldMessenger.of(context);
+    final message = 'Let\'s call on Voiceguardian! It\'s fast, simple and secure. Link : https://earthminorrights.com/';
+    final uri = Uri(
+      scheme: 'sms',
+      path: phoneNumber,
+      queryParameters: {'body': message},
     );
-  }
-
-  String _mapErrorToMessage(Object error) {
-    final message = error.toString();
-    if (message.contains('SocketException')) {
-      return 'Network unavailable. Try again later.';
+    if (await canLaunchUrl(uri)) {
+      await launchUrl(uri, mode: LaunchMode.externalApplication);
+    } else {
+      messenger.showSnackBar(
+        const SnackBar(content: Text('Could not open the SMS composer.')),
+      );
     }
-    return message.replaceFirst('Exception:', '').trim();
   }
 
   @override
   Widget build(BuildContext context) {
     final auth = Provider.of<AuthProvider>(context);
-    final theme = Theme.of(context);
-    final future = _pendingRequestsFuture;
+    final registered = auth.registeredContacts;
+    final others = auth.otherContacts;
 
-    if (auth.token == null) {
-      return Center(
-        child: Text(
-          'Log in to manage your friends.',
-          style: theme.textTheme.titleMedium,
-        ),
-      );
-    }
-
-    if (future == null) {
-      return const Center(child: CircularProgressIndicator());
-    }
-
-    return RefreshIndicator(
-      onRefresh: _refreshPendingRequests,
-      child: FutureBuilder<List<dynamic>>(
-        future: future,
-        builder: (context, snapshot) {
-          if (snapshot.connectionState == ConnectionState.waiting) {
-            return ListView(
-              physics: const AlwaysScrollableScrollPhysics(),
-              children: const [
-                SizedBox(height: 200),
-                Center(child: CircularProgressIndicator()),
-              ],
-            );
-          }
-
-          if (snapshot.hasError) {
-            return ListView(
-              physics: const AlwaysScrollableScrollPhysics(),
-              children: [
-                const SizedBox(height: 160),
-                Center(
-                  child: Text(
-                    'Unable to load friend requests. Pull to refresh.',
-                    textAlign: TextAlign.center,
-                    style: theme.textTheme.titleMedium?.copyWith(
-                      color: theme.colorScheme.error,
-                    ),
-                  ),
-                ),
-              ],
-            );
-          }
-
-          final pendingRequests = snapshot.data ?? <dynamic>[];
-
-          return ListView(
-            physics: const AlwaysScrollableScrollPhysics(),
-            padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 24),
-            children: [
-              Card(
-                elevation: 0,
-                shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(16),
-                ),
-                child: Padding(
-                  padding: const EdgeInsets.all(20),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(
-                        'Add a friend',
-                        style: theme.textTheme.titleMedium?.copyWith(
-                          fontWeight: FontWeight.w600,
-                        ),
-                      ),
-                      const SizedBox(height: 12),
-                      TextField(
-                        controller: _usernameController,
-                        textInputAction: TextInputAction.done,
-                        onSubmitted: (_) => _sendFriendRequest(),
-                        decoration: const InputDecoration(
-                          labelText: 'Friend username',
-                          border: OutlineInputBorder(),
-                        ),
-                      ),
-                      const SizedBox(height: 12),
-                      SizedBox(
-                        width: double.infinity,
-                        child: ElevatedButton.icon(
-                          onPressed:
-                              _isSendingRequest ? null : _sendFriendRequest,
-                          icon: _isSendingRequest
-                              ? const SizedBox(
-                                  width: 16,
-                                  height: 16,
-                                  child: CircularProgressIndicator(
-                                    strokeWidth: 2,
-                                  ),
-                                )
-                              : const Icon(Icons.person_add_alt_1),
-                          label: Text(
-                            _isSendingRequest
-                                ? 'Sending request...'
-                                : 'Send friend request',
-                          ),
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-              ),
-              const SizedBox(height: 24),
-              Text(
-                'Pending requests',
-                style: theme.textTheme.titleMedium?.copyWith(
-                  fontWeight: FontWeight.w600,
-                ),
-              ),
-              const SizedBox(height: 12),
-              if (pendingRequests.isEmpty)
-                Container(
-                  padding: const EdgeInsets.all(24),
-                  decoration: BoxDecoration(
-                    color: theme.colorScheme.surface,
-                    borderRadius: BorderRadius.circular(16),
-                  ),
-                  child: Text(
-                    'No pending requests. Share your username so friends can find you!',
-                    style: theme.textTheme.bodyMedium?.copyWith(
-                      color: theme.colorScheme.onSurfaceVariant,
-                    ),
-                  ),
+    return ListView(
+      padding: const EdgeInsets.all(16),
+      children: [
+        ElevatedButton.icon(
+          onPressed: _isSyncing ? null : _syncContacts,
+          icon: _isSyncing
+              ? const SizedBox(
+                  width: 16,
+                  height: 16,
+                  child: CircularProgressIndicator(strokeWidth: 2),
                 )
-              else
-                ...pendingRequests.map((request) {
-                  final friendData =
-                      request is Map<String, dynamic> ? request['friend'] : null;
-                  final friend =
-                      friendData is Map<String, dynamic> ? friendData : <String, dynamic>{};
-                  final username = friend['username']?.toString() ?? 'Unknown';
-                  final respectRaw = friend['respectfulness_score'];
-                  final respectValue = respectRaw is num
-                      ? respectRaw.toDouble()
-                      : double.tryParse(respectRaw?.toString() ?? '') ?? 0.0;
-                  final friendshipId =
-                      request is Map<String, dynamic> ? request['id'] as int? : null;
-
-                  return Card(
-                    margin: const EdgeInsets.only(bottom: 12),
-                    child: ListTile(
-                      leading: CircleAvatar(
-                        backgroundColor:
-                            theme.colorScheme.primary.withValues(alpha: 0.1),
-                        child: Text(username[0].toUpperCase()),
-                      ),
-                      title: Text(username),
-                      subtitle: Text(
-                        'Respectfulness: ${respectValue.toStringAsFixed(1)}%',
-                      ),
-                      trailing: ElevatedButton(
-                        onPressed: friendshipId == null
-                            ? null
-                            : () => _acceptFriendRequest(
-                                  friendshipId,
-                                  username,
-                                  ),
-                        child: const Text('Accept'),
-                      ),
+              : const Icon(Icons.sync),
+          label: const Text('Sync Contacts'),
+        ),
+        if (_statusMessage != null) ...[
+          const SizedBox(height: 12),
+          Text(
+            _statusMessage!,
+            style: (Theme.of(context).textTheme.bodyMedium ?? const TextStyle())
+                .copyWith(color: Theme.of(context).colorScheme.primary),
+          ),
+        ],
+        const SizedBox(height: 24),
+        if (registered.isNotEmpty) ...[
+          Text('Contacts on VoiceGuardian', style: Theme.of(context).textTheme.titleLarge),
+          const SizedBox(height: 8),
+          ...registered.map((contact) => ListTile(
+                leading: CircleAvatar(
+                  child: Text(contact.displayName.isNotEmpty
+                      ? contact.displayName[0].toUpperCase()
+                      : '?'),
+                ),
+                title: Text(contact.displayName),
+                subtitle: Text('${contact.username} • ${contact.phoneNumber}'),
+              )),
+          const SizedBox(height: 24),
+        ],
+        if (others.isNotEmpty) ...[
+          Text('Other contacts', style: Theme.of(context).textTheme.titleLarge),
+          const SizedBox(height: 8),
+        ...others.map((contact) {
+                return ListTile(
+                  leading: const Icon(Icons.contact_phone_outlined),
+                  title: Text(contact.displayName),
+                  subtitle: Text(contact.phoneNumber),
+                  trailing: IconButton(
+                    icon: Icon(
+                      Icons.sms,
+                      color: Theme.of(context).colorScheme.primary,
                     ),
-                  );
-                }),
-            ],
-          );
-        },
-      ),
+                    tooltip: 'Invite via SMS',
+                    onPressed: () => _launchSmsInvite(contact.phoneNumber),
+                  ),
+                );
+              }),
+        ],
+        if (registered.isEmpty && others.isEmpty)
+          Padding(
+            padding: const EdgeInsets.only(top: 16),
+            child: Text(
+              'Tap Sync Contacts to find which of your contacts use VoiceGuardian. Others will stay listed here for reference.',
+              style: Theme.of(context).textTheme.bodyMedium,
+            ),
+          ),
+      ],
     );
   }
 }

@@ -12,6 +12,8 @@ import 'package:voice_guardian_app/screens/incoming_call_screen.dart';
 
 import 'package:voice_guardian_app/services/call_state_service.dart';
 import 'package:voice_guardian_app/services/agora_call_service.dart';
+import 'package:voice_guardian_app/services/api_service.dart';
+import 'package:voice_guardian_app/services/notification_service.dart';
 import 'package:voice_guardian_app/services/transcription_service.dart';
 import 'package:voice_guardian_app/utils/constants.dart';
 import 'firebase_options.dart';
@@ -19,70 +21,103 @@ import 'firebase_options.dart';
 // Global key for navigation from background/terminated states
 final GlobalKey<NavigatorState> navigatorKey = GlobalKey<NavigatorState>();
 
+// Services used across isolates (notification tap + background FCM)
+final NotificationService notificationService = NotificationService();
+
 // --- FCM HANDLERS ---
 // This function shows our new in-app call screen
 // lib/main.dart
 
 // --- NEW FCM HANDLERS ---
 // This function shows our new in-app call screen
-void _showIncomingCallScreen(RemoteMessage message) {
-  if (message.data['type'] == 'incoming_call') {
-    debugPrint('FCM: incoming_call payload => ${message.data}');
-    final callerUsername = message.data['caller_name'];
-    final callerRespectfulness = message.data['caller_respectfulness'] ?? '0';
-    final roomName = message.data['room_name'];
+Future<void> _openIncomingCallUi({
+  required String? roomName,
+  required String? callerUsername,
+  required String callerRespectfulness,
+  bool suppressInAppTone = false,
+}) async {
+  debugPrint('MAIN: Navigating to incoming call UI for $callerUsername');
 
-    unawaited(Future(() async {      try {
-        debugPrint('MAIN: Incoming call received, showing Flutter preview above native sheet');
-        
-        // Update call state
-        if (navigatorKey.currentContext != null) {
-          final callState = Provider.of<CallStateService>(
-            navigatorKey.currentContext!,
-            listen: false,
-          );
-          callState.startRinging(
-            roomName: roomName ?? 'unknown',
-            peerUsername: callerUsername ?? 'Unknown Caller',
-          );
-        }
-        
-        // Navigate to Flutter incoming call screen
-        debugPrint('MAIN: Navigating to IncomingCallScreen');
-        if (navigatorKey.currentContext != null) {
-          Navigator.of(navigatorKey.currentContext!).push(
-            MaterialPageRoute(
-              builder: (context) => IncomingCallScreen(
-                roomName: roomName ?? 'unknown',
-                callerName: callerUsername ?? 'Unknown',
-                callerRespectfulness: callerRespectfulness,
-              ),
-            ),
-          );
-        }
-        debugPrint('Incoming call setup complete for caller: $callerUsername');
-      } catch (error) {
-        debugPrint('Error setting up incoming call: $error');
+  NavigatorState? navigator = navigatorKey.currentState;
+  BuildContext? context = navigatorKey.currentContext;
+
+  if (navigator == null || context == null) {
+    for (var i = 0; i < 10; i++) {
+      await Future.delayed(const Duration(milliseconds: 150));
+      navigator = navigatorKey.currentState;
+      context = navigatorKey.currentContext;
+      if (navigator != null && context != null) {
+        break;
       }
-    }));
+    }
   }
+
+  if (navigator == null || context == null || !context.mounted) {
+    debugPrint('Navigator unavailable, cannot show incoming call UI');
+    return;
+  }
+
+  await notificationService.clearIncomingCallNotification();
+
+  final callState = Provider.of<CallStateService>(
+    context,
+    listen: false,
+  );
+  callState.startRinging(
+    roomName: roomName ?? 'unknown',
+    peerUsername: callerUsername ?? 'Unknown Caller',
+  );
+
+  navigator.push(
+    MaterialPageRoute(
+      builder: (context) => IncomingCallScreen(
+        roomName: roomName ?? 'unknown',
+        callerName: callerUsername ?? 'Unknown',
+        callerRespectfulness: callerRespectfulness,
+        shouldPlayRingtone: !suppressInAppTone,
+      ),
+    ),
+  );
+}
+
+void _showIncomingCallScreen(
+  RemoteMessage message, {
+  bool suppressInAppTone = false,
+}) {
+  if (message.data['type'] != 'incoming_call') {
+    return;
+  }
+  debugPrint('FCM: incoming_call payload => ${message.data}');
+  final callerUsername = message.data['caller_name'];
+  final callerRespectfulness = (message.data['caller_respectfulness'] ?? '0').toString();
+  final roomName = message.data['room_name'];
+
+  unawaited(
+    _openIncomingCallUi(
+      roomName: roomName,
+      callerUsername: callerUsername,
+      callerRespectfulness: callerRespectfulness,
+      suppressInAppTone: suppressInAppTone,
+    ),
+  );
 }
 
 Future<bool> _handleCallSignal(RemoteMessage message) async {
   final type = message.data['type'];
   debugPrint('FCM: Handling call signal type=$type payload=${message.data}');
   if (type == 'call_cancelled' || type == 'call_declined') {
+    final navigator = navigatorKey.currentState;
+    final context = navigatorKey.currentContext;
+    await notificationService.clearIncomingCallNotification();
     final actor = message.data['cancelled_by'] ??
         message.data['declined_by'] ??
         (type == 'call_declined' ? 'The other participant' : 'The caller');
     final reason = type == 'call_declined' ? 'declined the call.' : 'cancelled the call.';
 
-    final navigator = navigatorKey.currentState;
-    if (navigator != null && navigator.canPop()) {
+    if (navigator != null && navigator.mounted && navigator.canPop()) {
       navigator.pop();
     }
-    final context = navigatorKey.currentContext;
-    if (context != null) {
+    if (context != null && context.mounted) {
       final callState = Provider.of<CallStateService>(context, listen: false);
       callState.markEnded(endedBy: actor);
       callState.reset();
@@ -96,6 +131,65 @@ Future<bool> _handleCallSignal(RemoteMessage message) async {
   return false;
 }
 
+Future<void> _handleNotificationTap(
+  Map<String, dynamic> payload,
+  String? actionId,
+) async {
+  BuildContext? context = navigatorKey.currentContext;
+  if (context == null) {
+    await Future.delayed(const Duration(milliseconds: 300));
+    context = navigatorKey.currentContext;
+  }
+  final type = payload['type'];
+  if (type != 'incoming_call') {
+    return;
+  }
+
+  final callerUsername = payload['caller_name'] as String?;
+  final callerRespectfulness =
+      (payload['caller_respectfulness'] ?? '0').toString();
+  final roomName = payload['room_name'] as String?;
+
+  if (actionId == 'decline_call') {
+    debugPrint('Notification action: decline_call');
+    if (context != null && context.mounted) {
+      final auth = Provider.of<AuthProvider>(context, listen: false);
+      final token = auth.token;
+      if (token != null && roomName != null && callerUsername != null) {
+        try {
+          await ApiService().declineCall(
+            token: token,
+            roomName: roomName,
+            callerUsername: callerUsername,
+          );
+        } catch (error) {
+          debugPrint('Failed to decline call from notification: $error');
+        }
+      }
+
+      if (!context.mounted) {
+        await notificationService.clearIncomingCallNotification();
+        return;
+      }
+
+      final callState =
+          Provider.of<CallStateService>(context, listen: false);
+      callState.markEnded(endedBy: callerUsername);
+      callState.reset();
+    }
+    await notificationService.clearIncomingCallNotification();
+    return;
+  }
+
+  // Default (tap or accept)
+  await _openIncomingCallUi(
+    roomName: roomName,
+    callerUsername: callerUsername,
+    callerRespectfulness: callerRespectfulness,
+    suppressInAppTone: true,
+  );
+}
+
 // Foreground message handler
 Future<void> _handleForegroundMessage(RemoteMessage message) async {
   debugPrint('FCM: Got a message whilst in the foreground!');
@@ -103,13 +197,22 @@ Future<void> _handleForegroundMessage(RemoteMessage message) async {
     debugPrint('FCM: Foreground message handled as cancel/decline');
     return;
   }
+  if (message.data['type'] == 'incoming_call') {
+    await notificationService.showIncomingCallNotification(
+      callerName: message.data['caller_name'] ?? 'Unknown',
+      roomName: message.data['room_name'] ?? 'unknown',
+      callerRespectfulness:
+          (message.data['caller_respectfulness'] ?? '0').toString(),
+    );
+  }
   debugPrint('FCM: Foreground message routed to _showIncomingCallScreen');
-  _showIncomingCallScreen(message);
+  _showIncomingCallScreen(message, suppressInAppTone: true);
 }
 
 
 @pragma('vm:entry-point')
 Future<void> _firebaseMessagingBackgroundHandler(RemoteMessage message) async {
+  WidgetsFlutterBinding.ensureInitialized();
   if (Firebase.apps.isEmpty) {
     try {
       await Firebase.initializeApp(options: DefaultFirebaseOptions.currentPlatform);
@@ -129,6 +232,19 @@ Future<void> _firebaseMessagingBackgroundHandler(RemoteMessage message) async {
   // Let's just log it for now.
   debugPrint("Background message received: ${message.data}");
   // _showIncomingCallScreen(message); // This line is complex from background, let's simplify
+  final type = message.data['type'];
+  if (type == 'incoming_call') {
+    await notificationService.init();
+    await notificationService.showIncomingCallNotification(
+      callerName: message.data['caller_name'] ?? 'Unknown',
+      roomName: message.data['room_name'] ?? 'unknown',
+      callerRespectfulness:
+          (message.data['caller_respectfulness'] ?? '0').toString(),
+    );
+  } else if (type == 'call_cancelled' || type == 'call_declined') {
+    await notificationService.init();
+    await notificationService.clearIncomingCallNotification();
+  }
 }
 // --- END FCM Handlers ---
 
@@ -141,6 +257,8 @@ void main() async {
       if (e.code != 'duplicate-app') rethrow;
     }
   }
+  await FirebaseMessaging.instance.requestPermission();
+  await notificationService.init(onNotificationTap: _handleNotificationTap);
   FirebaseMessaging.onMessage.listen((message) {
     unawaited(_handleForegroundMessage(message));
   });

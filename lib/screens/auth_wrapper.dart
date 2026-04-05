@@ -14,6 +14,21 @@ class AuthWrapper extends StatelessWidget {
     // Watch the AuthProvider for changes
     final authProvider = Provider.of<AuthProvider>(context);
 
+    if (authProvider.isInitializing) {
+      return const Scaffold(
+        body: Center(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              CircularProgressIndicator(),
+              SizedBox(height: 12),
+              Text('Checking session...'),
+            ],
+          ),
+        ),
+      );
+    }
+
     if (authProvider.isLoggedIn) {
       return const MainShell();
     } else {

@@ -1,12 +1,15 @@
 // lib/screens/call_screen.dart
 
 import 'dart:async';
+import 'dart:convert';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 import 'package:voice_guardian_app/providers/auth_provider.dart';
 import 'package:voice_guardian_app/services/api_service.dart';
 import 'package:voice_guardian_app/services/call_state_service.dart';
 import 'package:voice_guardian_app/services/agora_call_service.dart';
+import 'package:voice_guardian_app/services/permission_service.dart';
 import 'package:voice_guardian_app/services/transcription_service.dart';
 
 class CallScreen extends StatefulWidget {
@@ -35,8 +38,16 @@ class _CallScreenState extends State<CallScreen> {
   late final CallStateService _callStateService;
   late final AuthProvider _authProvider;
   late final TranscriptionService _transcriptionService;
+  bool _didWarmupAudio = false;
   String? _lastRephraseText;
   DateTime? _lastRephraseAt;
+  String? _lastRephraseAudioUrl;
+  DateTime? _lastRephraseAudioAt;
+  static const String _warningAssetPath = 'assets/audio/toxicity_warning.wav';
+  Uint8List? _warningClipBytes;
+  DateTime? _lastWarningAt;
+  Future<void> _audioQueue = Future<void>.value();
+  bool _isCoachAudioPlaying = false;
 
   bool _isConnecting = true;
   bool _hasCallEnded = false;
@@ -54,37 +65,21 @@ class _CallScreenState extends State<CallScreen> {
     // Play coach audio when a rephrase arrives
     _transcriptionService.onRephrase = (original, rephrased, toxicity) async {
       debugPrint('CallScreen: Rephrase callback triggered! original="$original" rephrased="$rephrased" toxicity=$toxicity');
-      final now = DateTime.now();
-      if (_agoraService.isAudioMixing) {
-        debugPrint('CallScreen: Audio mixing already playing; skipping duplicate rephrase');
+      await _handleRephraseEvent(rephrased, audioUrl: null, legacyFallback: true);
+    };
+    _transcriptionService.onRephraseReady = (text, audioUrl) async {
+      debugPrint('CallScreen: Rephrase-ready callback text="$text" audioUrl=$audioUrl');
+      await _handleRephraseEvent(text, audioUrl: audioUrl);
+    };
+    _transcriptionService.onToxicityAlert = () {
+      _handleToxicityTrigger('alert');
+    };
+    _transcriptionService.onToxicDetected = (transcript, toxicity) {
+      if (_shouldIgnoreToxicTranscript(transcript)) {
+        debugPrint('CallScreen: Skipping toxic transcript because it matches coach audio');
         return;
       }
-      if (_lastRephraseText == rephrased &&
-          _lastRephraseAt != null &&
-          now.difference(_lastRephraseAt!).inSeconds < 5) {
-        debugPrint('CallScreen: Same rephrase seen recently; skipping to avoid overlap');
-        return;
-      }
-      _lastRephraseText = rephrased;
-      _lastRephraseAt = now;
-      try {
-        debugPrint('CallScreen: Requesting TTS for: "$rephrased"');
-        final resp = await _apiService.synthesizeTts(
-          token: _authProvider.token!,
-          text: rephrased,
-        );
-        debugPrint('CallScreen: TTS response received');
-        final audioB64 = resp['audio_mp3_base64'] as String?;
-        if (audioB64 != null) {
-          debugPrint('CallScreen: Playing coach audio (${audioB64.length} bytes base64)');
-          await _agoraService.playCoachAudioBase64(audioB64);
-          debugPrint('CallScreen: Coach audio playback started');
-        } else {
-          debugPrint('CallScreen: No audio data in TTS response');
-        }
-      } catch (e) {
-        debugPrint('CallScreen: TTS error: $e');
-      }
+      _handleToxicityTrigger('transcript');
     };
 
     // Listen for remote user leaving
@@ -102,6 +97,16 @@ class _CallScreenState extends State<CallScreen> {
   }
 
   Future<void> _joinChannel() async {
+    if (!await _ensureMicrophonePermission()) {
+      if (mounted) {
+        setState(() {
+          _status = "Microphone permission required";
+          _isConnecting = false;
+        });
+      }
+      return;
+    }
+
     try {
       String token = widget.agoraToken ?? '';
       
@@ -123,6 +128,7 @@ class _CallScreenState extends State<CallScreen> {
         channelName: widget.channelName,
         uid: widget.uid,
         username: _authProvider.username,  // For transcription
+        perspectiveThreshold: _authProvider.perspectiveThreshold,
       );
 
       if (mounted) {
@@ -132,6 +138,8 @@ class _CallScreenState extends State<CallScreen> {
           _connectedAt = DateTime.now();
         });
         _callStateService.markConnected();
+        // Warm up coach audio once per call to avoid first-playback drop.
+        _warmupCoachAudio();
       }
     } catch (error) {
       debugPrint('CallScreen: Failed to join channel: $error');
@@ -145,6 +153,188 @@ class _CallScreenState extends State<CallScreen> {
         );
         Navigator.of(context).pop();
       }
+    }
+  }
+
+  Future<bool> _ensureMicrophonePermission() async {
+    if (await PermissionService.isMicrophoneGranted()) {
+      return true;
+    }
+
+    final granted = await PermissionService.requestMicrophone();
+    if (granted) {
+      return true;
+    }
+
+    if (!mounted) {
+      return false;
+    }
+
+    final messenger = ScaffoldMessenger.of(context);
+    messenger.showSnackBar(
+      SnackBar(
+        content: const Text('Microphone access is required to join the call.'),
+        action: SnackBarAction(
+          label: 'Settings',
+          onPressed: PermissionService.openAppSettings,
+        ),
+      ),
+    );
+    return false;
+  }
+
+  Future<void> _requestAndQueueAudio(String text, {required String label}) async {
+    try {
+      debugPrint('CallScreen: Requesting TTS ($label): "$text"');
+      final response = await _apiService.synthesizeTts(
+        token: _authProvider.token!,
+        text: text,
+      );
+      debugPrint('CallScreen: TTS response received ($label)');
+      final audioB64 = response['audio_mp3_base64'] as String?;
+      if (audioB64 != null) {
+        debugPrint('CallScreen: Queuing $label audio (${audioB64.length} bytes base64)');
+        final bytes = base64Decode(audioB64);
+        _queueAudioBytes(bytes, label: label, extension: 'mp3');
+      } else {
+        debugPrint('CallScreen: $label TTS response missing audio');
+      }
+    } catch (e) {
+      debugPrint('CallScreen: $label TTS error: $e');
+    }
+  }
+
+  Future<void> _handleRephraseEvent(String? rephrasedText, {String? audioUrl, bool legacyFallback = false}) async {
+    if (rephrasedText == null || rephrasedText.isEmpty) {
+      return;
+    }
+    if (_shouldSkipRephrase(rephrasedText, audioUrl)) {
+      debugPrint('CallScreen: Duplicate rephrase ignored (text="$rephrasedText" audioUrl=$audioUrl)');
+      return;
+    }
+    final now = DateTime.now();
+    _lastRephraseText = rephrasedText;
+    _lastRephraseAt = now;
+    _lastRephraseAudioUrl = audioUrl;
+    _lastRephraseAudioAt = audioUrl != null ? now : null;
+
+    if (audioUrl != null) {
+      await _queueRemoteRephrase(audioUrl, rephrasedText);
+      return;
+    }
+    if (legacyFallback) {
+      await _requestAndQueueAudio(rephrasedText, label: 'rephrase');
+    }
+  }
+
+  Future<void> _queueRemoteRephrase(String audioUrl, String fallbackText) async {
+    try {
+      final bytes = await _apiService.downloadAudioFile(
+        url: audioUrl,
+        token: _authProvider.token,
+      );
+      final extension = _inferExtensionFromUrl(audioUrl);
+      _queueAudioBytes(bytes, label: 'rephrase', extension: extension);
+    } catch (error) {
+      debugPrint('CallScreen: Failed to download rephrase audio: $error');
+      await _requestAndQueueAudio(fallbackText, label: 'rephrase');
+    }
+  }
+
+  void _queueAudioBytes(Uint8List bytes, {required String label, required String extension}) {
+    final playbackFuture = _audioQueue.then((_) async {
+      _isCoachAudioPlaying = true;
+      debugPrint('CallScreen: Starting queued $label audio');
+      try {
+        await _agoraService.playCoachAudioBytes(bytes, fileExtension: extension);
+      } finally {
+        _isCoachAudioPlaying = false;
+        debugPrint('CallScreen: Finished queued $label audio');
+      }
+    });
+    _audioQueue = playbackFuture.catchError((error) {
+      debugPrint('CallScreen: Audio playback error ($label): $error');
+    });
+  }
+
+  Future<void> _queueWarningClip() async {
+    final bytes = await _loadWarningClipBytes();
+    if (bytes == null) {
+      return;
+    }
+    _queueAudioBytes(bytes, label: 'warning', extension: 'wav');
+  }
+
+  Future<Uint8List?> _loadWarningClipBytes() async {
+    if (_warningClipBytes != null) {
+      return _warningClipBytes;
+    }
+    try {
+      final data = await rootBundle.load(_warningAssetPath);
+      _warningClipBytes = data.buffer.asUint8List();
+      return _warningClipBytes;
+    } catch (error) {
+      debugPrint('CallScreen: Failed to load warning clip asset: $error');
+      return null;
+    }
+  }
+
+  void _handleToxicityTrigger(String source) {
+    final now = DateTime.now();
+    if (_lastWarningAt != null &&
+        now.difference(_lastWarningAt!).inMilliseconds < 1200) {
+      debugPrint('CallScreen: Ignoring $source toxicity trigger due to cooldown');
+      return;
+    }
+    _lastWarningAt = now;
+    debugPrint('CallScreen: Toxicity trigger from $source');
+    _queueWarningClip();
+  }
+
+  String _inferExtensionFromUrl(String url) {
+    try {
+      final uri = Uri.parse(url);
+      final path = uri.path;
+      if (path.contains('.')) {
+        return path.split('.').last.toLowerCase();
+      }
+    } catch (_) {
+      // Ignore parse errors and fall back to mp3.
+    }
+    return 'mp3';
+  }
+
+  bool _shouldSkipRephrase(String text, String? audioUrl) {
+    final now = DateTime.now();
+    final textRecent = _lastRephraseText == text &&
+        _lastRephraseAt != null &&
+        now.difference(_lastRephraseAt!).inMilliseconds < 4000;
+    final audioRecent = audioUrl != null &&
+        _lastRephraseAudioUrl == audioUrl &&
+        _lastRephraseAudioAt != null &&
+        now.difference(_lastRephraseAudioAt!).inMilliseconds < 4000;
+    return textRecent || audioRecent;
+  }
+
+  bool _shouldIgnoreToxicTranscript(String transcript) {
+    if (_isCoachAudioPlaying) return true;
+    final lower = transcript.trim().toLowerCase();
+    final rephrase = _lastRephraseText?.trim().toLowerCase();
+    if (rephrase != null && rephrase.isNotEmpty && lower == rephrase) {
+      return true;
+    }
+    return false;
+  }
+
+  Future<void> _warmupCoachAudio() async {
+    if (_didWarmupAudio) return;
+    _didWarmupAudio = true;
+    if (!mounted) return;
+    try {
+      debugPrint('CallScreen: Warmup loading warning clip');
+      await _loadWarningClipBytes();
+    } catch (error) {
+      debugPrint('CallScreen: Warmup warning clip failed: $error');
     }
   }
 
@@ -192,6 +382,7 @@ class _CallScreenState extends State<CallScreen> {
   void dispose() {
     _agoraService.onRemoteUserLeft = null; // Clear callback
     _transcriptionService.onRephrase = null;
+    _transcriptionService.onToxicDetected = null;
     if (!_hasCallEnded) {
       _endCall();
     }
@@ -233,7 +424,7 @@ class _CallScreenState extends State<CallScreen> {
                     height: 120,
                     decoration: BoxDecoration(
                       shape: BoxShape.circle,
-                      color: Colors.white.withOpacity(0.1),
+                      color: Colors.white.withValues(alpha: 0.1),
                     ),
                     child: const Icon(
                       Icons.person,
@@ -289,8 +480,8 @@ class _CallScreenState extends State<CallScreen> {
                         label: agoraService.isMuted ? 'Unmute' : 'Mute',
                         onPressed: agoraService.toggleMute,
                         backgroundColor: agoraService.isMuted
-                            ? Colors.white.withOpacity(0.3)
-                            : Colors.white.withOpacity(0.1),
+                            ? Colors.white.withValues(alpha: 0.3)
+                            : Colors.white.withValues(alpha: 0.1),
                       ),
                       
                       // End call button
@@ -310,8 +501,8 @@ class _CallScreenState extends State<CallScreen> {
                         label: agoraService.isSpeakerOn ? 'Speaker' : 'Earpiece',
                         onPressed: agoraService.toggleSpeaker,
                         backgroundColor: agoraService.isSpeakerOn
-                            ? Colors.white.withOpacity(0.3)
-                            : Colors.white.withOpacity(0.1),
+                            ? Colors.white.withValues(alpha: 0.3)
+                            : Colors.white.withValues(alpha: 0.1),
                       ),
                     ],
                   );

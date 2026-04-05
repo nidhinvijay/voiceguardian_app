@@ -1,6 +1,5 @@
 import 'dart:async';
 import 'dart:convert';
-import 'dart:typed_data';
 import 'package:flutter/foundation.dart';
 import 'package:web_socket_channel/web_socket_channel.dart';
 import 'package:voice_guardian_app/utils/constants.dart';
@@ -12,6 +11,7 @@ class TranscriptionMessage {
   final double? toxicityScore;
   final String? original;
   final String? rephrased;
+  final String? audioUrl;
 
   TranscriptionMessage({
     required this.type,
@@ -20,6 +20,7 @@ class TranscriptionMessage {
     this.toxicityScore,
     this.original,
     this.rephrased,
+    this.audioUrl,
   });
 
   factory TranscriptionMessage.fromJson(Map<String, dynamic> json) {
@@ -32,6 +33,7 @@ class TranscriptionMessage {
           : null,
       original: json['original'] as String?,
       rephrased: json['rephrased'] as String?,
+      audioUrl: json['audio_url'] as String?,
     );
   }
 }
@@ -43,10 +45,14 @@ class TranscriptionService extends ChangeNotifier {
   String? _latestRephrase;
   String? _latestOriginal;
   double? _latestToxicityScore;
-  
+  String? _lastToxicTranscript;
+
   Function(String transcript)? onTranscript;
   Function(String original, String rephrased, double toxicity)? onRephrase;
   Function(String interim)? onInterim;
+  Function(String transcript, double? toxicity)? onToxicDetected;
+  Function()? onToxicityAlert;
+  Function(String text, String audioUrl)? onRephraseReady;
   
   bool get isConnected => _isConnected;
   String? get currentTranscript => _currentTranscript;
@@ -57,6 +63,7 @@ class TranscriptionService extends ChangeNotifier {
   Future<void> connect({
     required String channelName,
     required String username,
+    double? perspectiveThreshold,
   }) async {
     try {
       final baseUrl = Constants.baseUrl;
@@ -80,11 +87,15 @@ class TranscriptionService extends ChangeNotifier {
           notifyListeners();
         },
       );
-      _channel!.sink.add(jsonEncode({
+      final startPayload = <String, dynamic>{
         'type': 'start',
         'channel_name': channelName,
         'username': username,
-      }));
+      };
+      if (perspectiveThreshold != null) {
+        startPayload['perspective_threshold'] = perspectiveThreshold;
+      }
+      _channel!.sink.add(jsonEncode(startPayload));
       _isConnected = true;
       notifyListeners();
       debugPrint('TranscriptionService: Connected successfully');
@@ -139,6 +150,17 @@ class TranscriptionService extends ChangeNotifier {
           if (msg.text != null && onTranscript != null) {
             onTranscript!(msg.text!);
           }
+          final isToxicTranscript = msg.isToxic == true && msg.text != null;
+          if (isToxicTranscript) {
+            if (_lastToxicTranscript != msg.text) {
+              _lastToxicTranscript = msg.text;
+              if (onToxicDetected != null) {
+                onToxicDetected!(msg.text!, msg.toxicityScore);
+              }
+            }
+          } else {
+            _lastToxicTranscript = null;
+          }
           notifyListeners();
           debugPrint('TranscriptionService: Transcript: ${msg.text}');
           break;
@@ -151,12 +173,33 @@ class TranscriptionService extends ChangeNotifier {
             onRephrase!(msg.original!, msg.rephrased!, msg.toxicityScore!);
           }
           notifyListeners();
+          _lastToxicTranscript = null;
+          break;
+        case 'rephrase_ready':
+          _latestOriginal = msg.original;
+          final readyText = msg.rephrased ?? msg.text;
+          _latestRephrase = readyText;
+          _latestToxicityScore = msg.toxicityScore;
+          debugPrint('TranscriptionService: Rephrase ready audioUrl=${msg.audioUrl}');
+          if (readyText != null &&
+              msg.audioUrl != null &&
+              onRephraseReady != null) {
+            onRephraseReady!(readyText, msg.audioUrl!);
+          }
+          notifyListeners();
+          _lastToxicTranscript = null;
           break;
         case 'interim':
           if (msg.text != null && onInterim != null) {
             onInterim!(msg.text!);
           }
           debugPrint('TranscriptionService: Interim: ${msg.text}');
+          break;
+        case 'toxicity_alert':
+          debugPrint('TranscriptionService: Toxicity alert received');
+          if (onToxicityAlert != null) {
+            onToxicityAlert!();
+          }
           break;
         case 'error':
           debugPrint('TranscriptionService: Error from server: ${msg.text}');
